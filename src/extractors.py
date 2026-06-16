@@ -10,7 +10,7 @@ class CandidateExtractor:
     This is the class which has all the methods to extract the needed data from the jsons of the candidates 
     """
     
-    def __init__(self, reference_date_str: str = "2026-06-15"):
+    def __init__(self, reference_date_str: str = "2026-06-15" ):
         self.ref_date = datetime.datetime.strptime(reference_date_str, '%Y-%m-%d').date()
         
     def _smart_truncate(self, text: str, min_chars: int) -> str:
@@ -209,61 +209,45 @@ class CandidateExtractor:
 
     # Methods Below this are still under work
 
-    def extract_behavioral_vector(self, candidate: dict) -> dict:
+    def extract_behavioral_signals(self, candidate: dict) -> dict:
         """
-        Extracts a flat dictionary of behavioral signals used as score modifiers.
+        Extracts strict Redrob telemetry signals and calculates derived metrics 
+        (like days_inactive) for the Availability Multiplier.
         """
-        sig = candidate.get('redrob_signals', {})
-        
+        telemetry = candidate.get('redrob_signals', {})
+
         # Safely calculate days inactive
-        last_active_str = sig.get('last_active_date')
+        last_active_str = telemetry.get('last_active_date')
+        days_inactive = 0  # Default to 0 if missing (assume active)
+        
         if last_active_str:
-            last_active = datetime.datetime.strptime(last_active_str, '%Y-%m-%d').date()
-            days_inactive = (self.ref_date - last_active).days
-        else:
-            days_inactive = 0
+            try:
+                # .split('T')[0] handles ISO timestamps if they include time (e.g., 2025-10-12T14:30:00)
+                last_active = datetime.datetime.strptime(last_active_str.split('T')[0], '%Y-%m-%d').date()
+                days_inactive = max(0, (self.ref_date - last_active).days)
+            except ValueError:
+                # If the date is totally unparseable, default to a high penalty to be safe
+                days_inactive = 180 
 
         return {
-            "open_to_work": sig.get('open_to_work_flag', True),
-            "recruiter_response_rate": sig.get('recruiter_response_rate', 0.5),
-            "last_active_days_ago": days_inactive,
-            "interview_completion_rate": sig.get('interview_completion_rate', 0.5),
-            "notice_period_days": sig.get('notice_period_days', 60),
-            "github_activity_score": sig.get('github_activity_score', -1),
-            "saved_by_recruiters_30d": sig.get('saved_by_recruiters_30d', 0),
-            "profile_completeness_score": sig.get('profile_completeness_score', 0)
-        }
-
-    def extract_universal_footprint(self, candidate: dict) -> dict:
-        """
-        Extracts a universal, job-agnostic footprint of the candidate's career.
-        Uses Python sets to allow O(1) mathematical intersection against any JD.
-        """
-        p = candidate.get('profile', {})
-        career = candidate.get('career_history', [])
-        skills = candidate.get('skills', [])
-        
-        # Flatten historical data into fast-lookup sets
-        all_titles = {job.get('title', '').lower() for job in career if job.get('title')}
-        all_companies = {job.get('company', '').lower() for job in career if job.get('company')}
-        
-        # Verified skills: filters out keyword stuffers (must be >6 mo or advanced)
-        verified_skills = {
-            s.get('name', '').lower() for s in skills 
-            if s.get('proficiency') in ('advanced', 'expert') or s.get('duration_months', 0) > 6
+            "telemetry": {
+                # The "Ghosting" / Reliability Metrics
+                "days_inactive": days_inactive,
+                "response_rate": telemetry.get('recruiter_response_rate', 0.0),
+                "response_speed_hrs": telemetry.get('avg_response_time_hours', 72),
+                "interview_completion": telemetry.get('interview_completion_rate', 0.0),
+                "offer_acceptance": telemetry.get('offer_acceptance_rate', -1.0), 
+                
+                # The "Intent" / Activity Metrics
+                "is_active": telemetry.get('open_to_work_flag', False),
+                "saved_30d": telemetry.get('saved_by_recruiters_30d', 0),
+                "apps_30d": telemetry.get('applications_submitted_30d', 0),
+                
+                # Platform Quality Metrics
+                "github_score": telemetry.get('github_activity_score', -1),
+                "profile_completeness": telemetry.get('profile_completeness_score', 0)
+            },
+            "raw_telemetry": telemetry
         }
         
-        # Broad industry checks
-        consulting_firms = {"tcs", "infosys", "wipro", "accenture", "cognizant", "capgemini"}
-        is_pure_consulting = False
-        if all_companies:
-            is_pure_consulting = all(any(c in comp for c in consulting_firms) for comp in all_companies)
-
-        return {
-            "current_title": p.get('current_title', 'Professional'),
-            "years_exp": p.get('years_of_experience', 0),
-            "verified_skills": verified_skills,
-            "historical_titles": all_titles,
-            "historical_companies": all_companies,
-            "is_pure_consulting": is_pure_consulting
-        }
+        # Match relevancy method was removed due to being of the nature hardcoded 
